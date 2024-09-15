@@ -63,7 +63,7 @@ app.post('/registro', async (req, res) => {
       const hashedPassword = await bcrypt.hash(password, 10);
 
       // Insere o novo usuário
-      db.run('INSERT INTO usuarios (email, password, empresa) VALUES (?, ?, ?)', [email, hashedPassword, company], (err) => {
+      db.run('INSERT INTO usuarios (email, password, company) VALUES (?, ?, ?)', [email, hashedPassword, company], (err) => {
         if (err) {
           return res.status(500).json({ message: 'Erro ao registrar o usuário.' });
         }
@@ -96,9 +96,9 @@ app.post('/login', (req, res) => {
     }
 
     // Gera o token JWT
-    const token = jwt.sign({ email: user.email, company: user.empresa }, SECRET_KEY, { expiresIn: '1h' });
+    const token = jwt.sign({ email: user.email, company: user.company }, SECRET_KEY, { expiresIn: '1h' });
     
-    res.json({ token, company: user.empresa });
+    res.json({ token, company: user.company });
   });
 });
 
