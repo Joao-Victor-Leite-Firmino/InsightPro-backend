@@ -1,193 +1,220 @@
 const express = require('express');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
 
 const app = express();
-const PORT = 3000;
+const db = new sqlite3.Database('InsightPro.db'); // Para persistência
+const SECRET_KEY = 'seu_segredo_jwt'; // Altere para uma chave segura
 
-// Conexão com o banco de dados SQLite
-const db = new sqlite3.Database('InsightPro.db');
+app.use(express.json());
+app.use(cors()); // Permite acesso ao backend de outros domínios
 
 // Criação das tabelas
 db.serialize(() => {
-    db.run("CREATE TABLE IF NOT EXISTS usuarios (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE, password TEXT, company TEXT);");
-    db.run("CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, company TEXT, average_rating REAL, comments TEXT)");
+  // Tabela de usuários
+  db.run(`
+    CREATE TABLE IF NOT EXISTS usuarios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT,
+      password TEXT,
+      empresa TEXT
+    )
+  `);
+
+  // Tabela de produtos
+  db.run(`
+    CREATE TABLE IF NOT EXISTS products (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT,
+      company TEXT,
+      average_rating TEXT
+    )
+  `);
+
+  // Tabela de comentários
+  db.run(`
+    CREATE TABLE IF NOT EXISTS comments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER,
+      comment TEXT,
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    )
+  `);
 });
 
-app.use(express.json());
-app.use(cors());
-
-// Middleware para verificar o token JWT
-const verificarToken = (req, res, next) => {
-    const token = req.headers['authorization'];
-    if (!token) {
-        return res.status(403).json({ error: 'Nenhum token fornecido.' });
-    }
-    jwt.verify(token.split(' ')[1], 'secreto', (err, decoded) => {
-        if (err) {
-            return res.status(500).json({ error: 'Falha ao autenticar o token.' });
-        }
-        req.userId = decoded.id;
-        req.userRole = decoded.role;
-        next();
-    });
-};
-
-// Endpoints para produtos
-app.post('/products', (req, res) => {
-    const { name, company, average_rating, comments } = req.body;
-    if (!name || !company) {
-        return res.status(400).json({ error: 'Nome e empresa são obrigatórios!' });
-    }
-    db.run("INSERT INTO products (name, company, average_rating, comments) VALUES (?, ?, ?, ?)", [name, company, average_rating, comments], function (err) {
-        if (err) {
-            return res.status(500).json({ error: err.message });
-        }
-        res.status(201).json({ id: this.lastID, name, company, average_rating, comments });
-    });
-});
-
-app.get('/products', (req, res) => {
-    db.all("SELECT * FROM products", [], (err, rows) => {
-        if (err) {
-            return res.status(500).json({ error: err.message });
-        }
-        res.status(200).json(rows);
-    });
-});
-
-app.get('/products/:id', (req, res) => {
-    const { id } = req.params;
-    db.get("SELECT * FROM products WHERE id = ?", [id], (err, row) => {
-        if (err) {
-            return res.status(500).json({ error: err.message });
-        }
-        if (row) {
-            res.status(200).json(row);
-        } else {
-            res.status(404).json({ error: 'Produto não encontrado!' });
-        }
-    });
-});
-
-app.put('/products/:id', (req, res) => {
-    const { id } = req.params;
-    const { name, company, average_rating, comments } = req.body;
-    if (!name && !company && average_rating === undefined && comments === undefined) {
-        return res.status(400).json({ error: 'Pelo menos um campo deve ser fornecido para atualização!' });
-    }
-
-    const updateFields = [];
-    const updateValues = [];
-
-    if (name) {
-        updateFields.push("name = ?");
-        updateValues.push(name);
-    }
-    if (company) {
-        updateFields.push("company = ?");
-        updateValues.push(company);
-    }
-    if (average_rating !== undefined) {
-        updateFields.push("average_rating = ?");
-        updateValues.push(average_rating);
-    }
-    if (comments !== undefined) {
-        updateFields.push("comments = ?");
-        updateValues.push(comments);
-    }
-
-    updateValues.push(id);
-
-    const query = `UPDATE products SET ${updateFields.join(", ")} WHERE id = ?`;
-
-    db.run(query, updateValues, function (err) {
-        if (err) {
-            return res.status(500).json({ error: err.message });
-        }
-        if (this.changes) {
-            res.status(200).json({ message: 'Produto atualizado com sucesso!' });
-        } else {
-            res.status(404).json({ error: 'Produto não encontrado!' });
-        }
-    });
-});
-
-app.delete('/products/:id', (req, res) => {
-    const { id } = req.params;
-    db.run("DELETE FROM products WHERE id = ?", [id], function (err) {
-        if (err) {
-            return res.status(500).json({ error: err.message });
-        }
-        if (this.changes) {
-            res.status(200).json({ message: 'Produto removido com sucesso!' });
-        } else {
-            res.status(404).json({ error: 'Produto não encontrado!' });
-        }
-    });
-});
-
-// Endpoints para registro e login de usuários
+// Registro de um novo usuário
 app.post('/registro', async (req, res) => {
-    const { email, password, company } = req.body;
-    try {
-        const usuarioExistente = await buscarUsuario(email);
-        if (usuarioExistente) {
-            return res.status(400).json({ error: 'Usuário já registrado' });
+  const { email, password, company } = req.body;
+
+  if (!email || !password || !company) {
+    return res.status(400).json({ message: 'Por favor, preencha todos os campos.' });
+  }
+
+  try {
+    // Verifica se o usuário já existe
+    db.get('SELECT email FROM usuarios WHERE email = ?', [email], async (err, row) => {
+      if (row) {
+        return res.status(400).json({ message: 'E-mail já registrado.' });
+      }
+
+      // Hash da senha
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      // Insere o novo usuário
+      db.run('INSERT INTO usuarios (email, password, empresa) VALUES (?, ?, ?)', [email, hashedPassword, company], (err) => {
+        if (err) {
+          return res.status(500).json({ message: 'Erro ao registrar o usuário.' });
         }
-        const hashedPassword = await bcrypt.hash(password, 10);
-        await criarUsuario(email, hashedPassword, company);
-        res.status(201).json({ message: 'Usuário registrado com sucesso' });
-    } catch (error) {
-        console.error('Erro no registro:', error);
-        res.status(500).json({ error: 'Erro no registro de usuário' });
-    }
+
+        res.status(201).json({ message: 'Usuário registrado com sucesso!' });
+      });
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Erro no servidor.' });
+  }
 });
 
-app.post('/login', async (req, res) => {
-    const { email, password } = req.body;
-    try {
-        const usuario = await buscarUsuario(email);
-        if (!usuario) {
-            return res.status(401).json({ error: 'Usuário não encontrado' });
-        }
-        const senhaValida = await bcrypt.compare(password, usuario.password);
-        if (!senhaValida) {
-            return res.status(401).json({ error: 'Senha incorreta' });
-        }
-        const token = jwt.sign({ id: usuario.id, email: usuario.email, company: usuario.company }, 'secreto', { expiresIn: '1h' });
-        res.status(200).json({ token });
-    } catch (error) {
-        console.error('Erro no login:', error);
-        res.status(500).json({ error: 'Erro no login de usuário' });
+// Login de um usuário existente
+app.post('/login', (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ message: 'Por favor, preencha todos os campos.' });
+  }
+
+  db.get('SELECT * FROM usuarios WHERE email = ?', [email], async (err, user) => {
+    if (!user) {
+      return res.status(400).json({ message: 'Usuário não encontrado.' });
     }
+
+    // Verifica a senha
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({ message: 'Credenciais inválidas.' });
+    }
+
+    // Gera o token JWT
+    const token = jwt.sign({ email: user.email, company: user.empresa }, SECRET_KEY, { expiresIn: '1h' });
+    
+    res.json({ token, company: user.empresa });
+  });
 });
 
-// Funções auxiliares para manipulação de usuários
-const buscarUsuario = (email) => {
-    return new Promise((resolve, reject) => {
-        db.get('SELECT * FROM usuarios WHERE email = ?', [email], (err, row) => {
-            if (err) {
-                reject(err);
-            }
-            resolve(row);
-        });
-    });
+// Middleware de autenticação para proteger rotas
+const authenticateToken = (req, res, next) => {
+  const token = req.headers['authorization'];
+  if (!token) return res.status(401).json({ message: 'Token não fornecido.' });
+
+  jwt.verify(token, SECRET_KEY, (err, user) => {
+    if (err) return res.status(403).json({ message: 'Token inválido.' });
+    req.user = user;
+    next();
+  });
 };
 
-const criarUsuario = (email, password, company) => {
-    return new Promise((resolve, reject) => {
-        db.run('INSERT INTO usuarios (email, password, company) VALUES (?, ?, ?)', [email, password, company], (err) => {
-            if (err) {
-                reject(err);
-            }
-            resolve();
-        });
-    });
-};
+// Rota para salvar os dados do produto e comentários
+app.post('/saveProductData', (req, res) => {
+  const { name, company, average_rating, comments } = req.body;
 
+  if (!name || !company || !average_rating || !comments) {
+    return res.status(400).json({ message: 'Dados incompletos.' });
+  }
+
+  // Inserir produto no banco de dados
+  db.run('INSERT INTO products (name, company, average_rating) VALUES (?, ?, ?)', [name, company, average_rating], function(err) {
+    if (err) {
+      return res.status(500).json({ message: 'Erro ao salvar o produto.' });
+    }
+
+    const productId = this.lastID;
+
+    // Inserir comentários associados ao produto
+    const insertComment = db.prepare('INSERT INTO comments (product_id, comment) VALUES (?, ?)');
+    comments.forEach((comment) => {
+      insertComment.run(productId, comment);
+    });
+    insertComment.finalize();
+
+    res.status(201).json({ message: 'Produto e comentários salvos com sucesso!' });
+  });
+});
+
+// Rota para buscar todos os produtos e seus comentários
+app.get('/products', (req, res) => {
+  db.all('SELECT * FROM products', (err, products) => {
+    if (err) {
+      return res.status(500).json({ message: 'Erro ao buscar produtos.' });
+    }
+
+    // Itera sobre cada produto e busca seus comentários
+    const productsWithComments = products.map((product) => {
+      return new Promise((resolve, reject) => {
+        db.all('SELECT comment FROM comments WHERE product_id = ?', [product.id], (err, comments) => {
+          if (err) {
+            reject(err);
+          } else {
+            product.comments = comments.map(c => ({ id: c.id, text: c.comment }));
+            resolve(product);
+          }
+        });
+      });
+    });
+
+    Promise.all(productsWithComments)
+      .then(results => res.json(results))
+      .catch(error => res.status(500).json({ message: 'Erro ao buscar comentários dos produtos.' }));
+  });
+});
+
+// Rota para buscar detalhes de um produto por ID
+app.get('/products/:id', (req, res) => {
+  const productId = req.params.id;
+
+  db.get('SELECT * FROM products WHERE id = ?', [productId], (err, product) => {
+    if (err) {
+      return res.status(500).json({ message: 'Erro ao buscar produto.' });
+    }
+
+    if (!product) {
+      return res.status(404).json({ message: 'Produto não encontrado.' });
+    }
+
+    // Busca os comentários associados ao produto
+    db.all('SELECT comment FROM comments WHERE product_id = ?', [productId], (err, comments) => {
+      if (err) {
+        return res.status(500).json({ message: 'Erro ao buscar comentários.' });
+      }
+
+      // Adiciona os comentários ao produto e retorna a resposta
+      product.comments = comments.map(c => ({ id: c.id, text: c.comment }));
+      res.json(product);
+    });
+  });
+});
+
+// Rota para excluir um produto por ID
+app.delete('/deleteProduct/:id', (req, res) => {
+  const productId = req.params.id;
+
+  const query = `DELETE FROM products WHERE id = ?`;
+
+  db.run(query, [productId], function (err) {
+    if (err) {
+      console.error("Erro ao excluir o produto:", err);
+      return res.status(500).json({ error: "Erro ao excluir o produto" });
+    }
+
+    if (this.changes > 0) {
+      res.status(200).json({ message: `Produto com ID ${productId} excluído com sucesso` });
+    } else {
+      res.status(404).json({ error: `Produto com ID ${productId} não encontrado` });
+    }
+  });
+});
+
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Servidor rodando na porta http://localhost:${PORT}`);
+  console.log(`Servidor rodando na porta ${PORT}`);
 });
