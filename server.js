@@ -42,6 +42,16 @@ db.serialize(() => {
       FOREIGN KEY (product_id) REFERENCES products(id)
     )
   `);
+
+  // Tabela de insights
+  db.run(`
+    CREATE TABLE IF NOT EXISTS insights (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER,
+      insights_text TEXT,
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    )
+  `);
 });
 
 // Registro de um novo usuário
@@ -97,7 +107,7 @@ app.post('/login', (req, res) => {
 
     // Gera o token JWT
     const token = jwt.sign({ email: user.email, company: user.company }, SECRET_KEY, { expiresIn: '1h' });
-    
+
     res.json({ token, company: user.company });
   });
 });
@@ -114,16 +124,16 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Rota para salvar os dados do produto e comentários
+// Rota para salvar os dados do produto, comentários e insights
 app.post('/saveProductData', (req, res) => {
-  const { name, company, average_rating, comments } = req.body;
+  const { name, company, average_rating, comments, insights } = req.body;
 
-  if (!name || !company || !average_rating || !comments) {
+  if (!name || !company || !average_rating || !comments || !insights) {
     return res.status(400).json({ message: 'Dados incompletos.' });
   }
 
   // Inserir produto no banco de dados
-  db.run('INSERT INTO products (name, company, average_rating) VALUES (?, ?, ?)', [name, company, average_rating], function(err) {
+  db.run('INSERT INTO products (name, company, average_rating) VALUES (?, ?, ?)', [name, company, average_rating], function (err) {
     if (err) {
       return res.status(500).json({ message: 'Erro ao salvar o produto.' });
     }
@@ -137,18 +147,24 @@ app.post('/saveProductData', (req, res) => {
     });
     insertComment.finalize();
 
-    res.status(201).json({ message: 'Produto e comentários salvos com sucesso!' });
+    // Inserir insights associados ao produto
+    db.run('INSERT INTO insights (product_id, insights_text) VALUES (?, ?)', [productId, insights], function (err) {
+      if (err) {
+        return res.status(500).json({ message: 'Erro ao salvar os insights.' });
+      }
+    });
+
+    res.status(201).json({ message: 'Produto, comentários e insights salvos com sucesso!' });
   });
 });
 
-// Rota para buscar todos os produtos e seus comentários
+// Rota para buscar todos os produtos e seus comentários e insights
 app.get('/products', (req, res) => {
   db.all('SELECT * FROM products', (err, products) => {
     if (err) {
       return res.status(500).json({ message: 'Erro ao buscar produtos.' });
     }
 
-    // Itera sobre cada produto e busca seus comentários
     const productsWithComments = products.map((product) => {
       return new Promise((resolve, reject) => {
         db.all('SELECT comment FROM comments WHERE product_id = ?', [product.id], (err, comments) => {
@@ -168,7 +184,7 @@ app.get('/products', (req, res) => {
   });
 });
 
-// Rota para buscar detalhes de um produto por ID
+// Rota para buscar detalhes de um produto por ID, incluindo insights
 app.get('/products/:id', (req, res) => {
   const productId = req.params.id;
 
@@ -187,9 +203,18 @@ app.get('/products/:id', (req, res) => {
         return res.status(500).json({ message: 'Erro ao buscar comentários.' });
       }
 
-      // Adiciona os comentários ao produto e retorna a resposta
-      product.comments = comments.map(c => ({ id: c.id, text: c.comment }));
-      res.json(product);
+      // Busca os insights associados ao produto
+      db.get('SELECT insights_text FROM insights WHERE product_id = ?', [productId], (err, insights) => {
+        if (err) {
+          return res.status(500).json({ message: 'Erro ao buscar insights.' });
+        }
+
+        // Adiciona os comentários e insights ao produto e retorna a resposta
+        product.comments = comments.map(c => ({ id: c.id, text: c.comment }));
+        product.insights = insights ? insights.insights_text : null;
+
+        res.json(product);
+      });
     });
   });
 });
